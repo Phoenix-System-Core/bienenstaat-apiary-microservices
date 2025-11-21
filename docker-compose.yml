@@ -1,0 +1,126 @@
+version: '3.8'
+
+services:
+  # Bienenstaat Database - Postgres with pgvector
+  bienenstaat-db:
+    image: pgvector/pgvector:pg16
+    container_name: bienenstaat-db
+    environment:
+      POSTGRES_DB: ${BIENENSTAAT_DB_NAME:-bienenstaat}
+      POSTGRES_USER: ${BIENENSTAAT_DB_USER:-bienenstaat}
+      POSTGRES_PASSWORD: ${BIENENSTAAT_DB_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - bienenstaat-db-data:/var/lib/postgresql/data
+      - ./bienenstaat/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - bienenstaat-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${BIENENSTAAT_DB_USER:-bienenstaat}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Bienenstaat API - FastAPI service for dynasty PDFs and BEE blocks
+  bienenstaat-api:
+    build:
+      context: ./bienenstaat
+      dockerfile: Dockerfile
+    container_name: bienenstaat-api
+    environment:
+      DATABASE_URL: postgresql://${BIENENSTAAT_DB_USER:-bienenstaat}:${BIENENSTAAT_DB_PASSWORD}@bienenstaat-db:5432/${BIENENSTAAT_DB_NAME:-bienenstaat}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      VECTOR_DIMENSION: ${VECTOR_DIMENSION:-1536}
+    volumes:
+      - ./bienenstaat/app:/app
+      - bienenstaat-uploads:/app/uploads
+      - bienenstaat-pdfs:/app/pdfs
+    ports:
+      - "8001:8000"
+    networks:
+      - bienenstaat-network
+    depends_on:
+      bienenstaat-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Apiary.AI Database - Postgres for workflow state
+  apiary-db:
+    image: postgres:16-alpine
+    container_name: apiary-db
+    environment:
+      POSTGRES_DB: ${APIARY_DB_NAME:-apiary}
+      POSTGRES_USER: ${APIARY_DB_USER:-apiary}
+      POSTGRES_PASSWORD: ${APIARY_DB_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - apiary-db-data:/var/lib/postgresql/data
+      - ./apiary/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5433:5432"
+    networks:
+      - apiary-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${APIARY_DB_USER:-apiary}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Apiary.AI API - FastAPI workflows for org/family automation
+  apiary-api:
+    build:
+      context: ./apiary
+      dockerfile: Dockerfile
+    container_name: apiary-api
+    environment:
+      DATABASE_URL: postgresql://${APIARY_DB_USER:-apiary}:${APIARY_DB_PASSWORD}@apiary-db:5432/${APIARY_DB_NAME:-apiary}
+      GOOGLE_CALENDAR_CREDENTIALS: ${GOOGLE_CALENDAR_CREDENTIALS}
+      GMAIL_CREDENTIALS: ${GMAIL_CREDENTIALS}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      BIENENSTAAT_API_URL: http://bienenstaat-api:8000
+    volumes:
+      - ./apiary/app:/app
+      - apiary-workflows:/app/workflows
+    ports:
+      - "8002:8000"
+    networks:
+      - apiary-network
+      - bienenstaat-network
+    depends_on:
+      apiary-db:
+        condition: service_healthy
+      bienenstaat-api:
+        condition: service_started
+    restart: unless-stopped
+
+  # Redis for caching and task queue
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - bienenstaat-network
+      - apiary-network
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+networks:
+  bienenstaat-network:
+    driver: bridge
+  apiary-network:
+    driver: bridge
+
+volumes:
+  bienenstaat-db-data:
+  bienenstaat-uploads:
+  bienenstaat-pdfs:
+  apiary-db-data:
+  apiary-workflows:
+  redis-data:
